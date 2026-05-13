@@ -194,13 +194,3 @@ dbt test
 |---|---|
 | `main` | Stable release |
 | `dev` | Active development (CI workflow added) |
-
----
-
-## Possible Improvements
-
-- Add Kafka Connect S3 Sink connector to bypass the Python consumer
-- Use Snowpipe for continuous file ingestion from MinIO
-- Add Great Expectations for data quality checks before dbt
-- Containerise the dbt runner and add it as an Airflow operator
-- Add Grafana + Prometheus monitoring for Kafka lag
