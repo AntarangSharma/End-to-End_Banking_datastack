@@ -1,5 +1,28 @@
 # End-to-End Banking Datastack
 
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL_15-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Debezium](https://img.shields.io/badge/Debezium-Connect_2.2-D32F2F)](https://debezium.io/)
+[![Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
+[![MinIO](https://img.shields.io/badge/MinIO-C72E49?logo=minio&logoColor=white)](https://min.io/)
+[![Snowflake](https://img.shields.io/badge/Snowflake-29B5E8?logo=snowflake&logoColor=white)](https://www.snowflake.com/)
+[![dbt](https://img.shields.io/badge/dbt-FF694B?logo=dbt&logoColor=white)](https://www.getdbt.com/)
+[![Airflow](https://img.shields.io/badge/Apache_Airflow_2.9-017CEE?logo=apacheairflow&logoColor=white)](https://airflow.apache.org/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+
+## Contents
+
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Services & Ports](#services--ports)
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+- [Data Flow](#data-flow-step-by-step)
+- [dbt Project](#dbt-project)
+- [Branches](#branches)
+
+---
+
 A fully containerised, real-time data engineering stack simulating a banking data platform. Covers the complete data journey from transactional Postgres → CDC with Debezium → Kafka streaming → data lake (MinIO) → Snowflake → dbt transformations → Airflow orchestration.
 
 ---
