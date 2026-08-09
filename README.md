@@ -14,7 +14,7 @@
 - [Architecture](#architecture)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
-- [Services & Ports](#services--ports)
+- [Services \& Ports](#services--ports)
 - [Prerequisites](#prerequisites)
 - [Setup](#setup)
 - [Data Flow](#data-flow-step-by-step)
@@ -38,7 +38,7 @@ Debezium Connect 2.2
       │
       │  CDC events
       ▼
-Kafka (Confluent 7.4) + Schema Registry
+Kafka (Confluent 7.4)
       │
       │  Python consumer
       ▼
@@ -68,7 +68,7 @@ All components run via **Docker Compose** on a single host.
 | Source DB | PostgreSQL | 15 |
 | CDC | Debezium Connect | 2.2 |
 | Message Broker | Apache Kafka (Confluent) | 7.4 |
-| Schema Registry | Confluent Schema Registry | 7.4 |
+| Coordination | ZooKeeper (Confluent) | 7.4 |
 | Data Lake | MinIO (S3-compatible) | latest |
 | Consumer | Python | 3.11 |
 | Cloud Warehouse | Snowflake | — |
@@ -82,26 +82,32 @@ All components run via **Docker Compose** on a single host.
 
 ```
 End-to-End_Banking_datastack/
-├── docker-compose.yml          # All services defined here
-├── .env.example                # Environment variable template
-├── run_pipeline.sh             # One-shot pipeline runner
-├── data-generator/             # Synthetic banking transaction generator
-│   ├── generate_data.py
-│   └── requirements.txt
-├── kafka-consumer/             # Python consumer: Kafka → MinIO
-│   ├── consumer.py
-│   └── requirements.txt
-├── debezium/
-│   └── register-connector.sh  # Registers the Postgres CDC connector
-├── dbt/                        # dbt project (Snowflake target)
+├── docker-compose.yml                 # All services defined here
+├── dockerfile-airflow.dockerfile      # Airflow image (webserver + scheduler)
+├── .env.example                       # Environment variable template
+├── requirements.txt                   # Python deps for the local scripts
+├── run_pipeline.sh                    # Runs consumer + generator together
+├── data-generator/
+│   └── fake_generator.py              # Synthetic banking transactions → Postgres
+├── consumer/
+│   ├── kafka_to_minio.py              # Kafka → MinIO landing
+│   └── list_topics.py                 # Debug helper: list Kafka topics
+├── kafka-debezium/
+│   └── generate_and_post_connector.py # Registers the Postgres CDC connector
+├── postgres/
+│   └── schema.sql                     # customers / accounts / transactions DDL
+├── banking_dbt/                       # dbt project (Snowflake target)
 │   ├── dbt_project.yml
-│   ├── models/
-│   │   ├── staging/            # Raw Snowflake → typed/cleaned
-│   │   └── marts/              # Business-level aggregations
-│   └── tests/
-└── airflow/
-    └── dags/                   # Airflow DAGs (orchestration)
+│   ├── models/                        # staging → marts
+│   └── snapshots/
+├── docker/
+│   └── dags/                          # Airflow DAGs (mounted into containers)
+└── .github/workflows/
+    └── ci.yml
 ```
+
+> `docker/` also holds runtime state mounted by Compose (`docker/logs`, `docker/plugins`,
+> `docker/postgres/data`, `docker/minio/data`). These are created on first run.
 
 ---
 
@@ -109,13 +115,15 @@ End-to-End_Banking_datastack/
 
 | Service | Port | Description |
 |---|---|---|
-| PostgreSQL | 5432 | Source transactional database |
-| Kafka Broker | 9092 | Message broker |
-| Schema Registry | 8081 | Avro/JSON schema store |
+| PostgreSQL (banking) | 5432 | Source transactional database |
+| ZooKeeper | 2181 | Kafka coordination |
+| Kafka Broker | 9092 | Internal listener (Docker network) |
+| Kafka Broker | 29092 | Host listener — use this from your machine |
 | Kafka Connect (Debezium) | 8083 | CDC connector REST API |
 | MinIO | 9000 / 9001 | S3-compatible object store + console |
 | Airflow Webserver | 8080 | DAG management UI |
 | Airflow Scheduler | — | Background DAG runner |
+| PostgreSQL (Airflow metadata) | 5433 | Separate from the banking DB |
 
 ---
 
@@ -124,7 +132,7 @@ End-to-End_Banking_datastack/
 - **Docker** 24+ and **Docker Compose** v2
 - **16 GB RAM** recommended (8 containers running simultaneously)
 - **Snowflake** account with a warehouse and database provisioned
-- Python 3.11+ (for local development only — containers handle runtime)
+- Python 3.11+ — the consumer, generator, and connector scripts run on the host
 
 ---
 
@@ -134,31 +142,20 @@ End-to-End_Banking_datastack/
 
 ```bash
 cp .env.example .env
-# Edit .env with your Snowflake credentials and MinIO secrets
+# Edit .env: Postgres, Kafka, MinIO, and Airflow metadata-DB settings
 ```
 
-`.env` template:
+Every variable in `.env.example` is read by `docker-compose.yml` or by one of the
+Python scripts. Compose will start with blank credentials if they are missing, so
+fill the file in before the first run.
 
-```env
-# Postgres
-POSTGRES_USER=banking_user
-POSTGRES_PASSWORD=banking_pass
-POSTGRES_DB=banking_db
+### 2 — Install the Python dependencies
 
-# MinIO
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin
-
-# Snowflake
-SNOWFLAKE_ACCOUNT=<your_account>
-SNOWFLAKE_USER=<your_user>
-SNOWFLAKE_PASSWORD=<your_password>
-SNOWFLAKE_DATABASE=BANKING
-SNOWFLAKE_WAREHOUSE=COMPUTE_WH
-SNOWFLAKE_SCHEMA=RAW
+```bash
+pip install -r requirements.txt
 ```
 
-### 2 — Start all services
+### 3 — Start all services
 
 ```bash
 docker compose up -d
@@ -166,19 +163,30 @@ docker compose up -d
 
 Wait ~60 seconds for Kafka and Connect to fully initialise.
 
-### 3 — Register the Debezium connector
+### 4 — Load the source schema
 
 ```bash
-bash debezium/register-connector.sh
+psql -h localhost -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f postgres/schema.sql
 ```
 
-### 4 — Run the pipeline
+### 5 — Register the Debezium connector
+
+```bash
+python kafka-debezium/generate_and_post_connector.py
+```
+
+This POSTs the connector config to Kafka Connect at `http://localhost:8083/connectors`,
+capturing `public.customers`, `public.accounts`, and `public.transactions` under the
+`banking_server` topic prefix.
+
+### 6 — Run the pipeline
 
 ```bash
 bash run_pipeline.sh
 ```
 
-This generates synthetic transactions, streams them through Kafka, lands them in MinIO, and loads them into Snowflake.
+This starts the synthetic transaction generator and the Kafka → MinIO consumer
+together, and stops both on `Ctrl-C`.
 
 ---
 
@@ -187,7 +195,7 @@ This generates synthetic transactions, streams them through Kafka, lands them in
 1. **Data Generator** inserts synthetic banking transactions into PostgreSQL
 2. **Debezium** captures row-level changes via PostgreSQL logical replication (`pgoutput`)
 3. **Kafka** receives CDC events as topics (one topic per table)
-4. **Python Consumer** reads from Kafka topics and writes Parquet files to MinIO
+4. **Python Consumer** reads from Kafka topics and writes the events to MinIO
 5. **MinIO** acts as the raw data lake (S3-compatible bucket)
 6. **Snowflake** ingests files from MinIO via `COPY INTO` or Snowpipe
 7. **dbt** runs staging and mart models on top of the raw Snowflake tables
@@ -197,13 +205,18 @@ This generates synthetic transactions, streams them through Kafka, lands them in
 
 ## dbt Project
 
+The dbt project lives in [`banking_dbt/`](banking_dbt). Compose mounts it into the
+Airflow containers at `/opt/airflow/banking_dbt`, with the profile directory taken
+from `banking_dbt/.dbt`.
+
 ```bash
 # Install dependencies
 pip install dbt-snowflake
 
-# Configure ~/.dbt/profiles.yml with your Snowflake credentials
+# Configure banking_dbt/.dbt/profiles.yml with your Snowflake credentials
+# (this directory is git-ignored — never commit credentials)
 
-# Run transformations
+cd banking_dbt
 dbt deps
 dbt run
 dbt test
